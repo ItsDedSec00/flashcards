@@ -14,7 +14,7 @@ function parseJsonResponse(content) {
   return parsed;
 }
 
-async function callOpenRouter(messages, { model, temperature = 0.3, max_tokens = 4000 } = {}) {
+async function callOpenRouter(messages, { model = DEFAULT_MODEL, temperature = 0.3, max_tokens = 4000 } = {}) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY not set in .env file');
 
