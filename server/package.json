@@ -1,0 +1,12 @@
+{
+  "name": "flashcard-server",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "express": "^5.1.0",
+    "multer": "^2.0.0",
+    "pdf-parse": "^1.1.1",
+    "dotenv": "^16.4.0",
+    "uuid": "^11.1.0"
+  }
+}

@@ -1,0 +1,7 @@
+node_modules
+server/uploads/*
+!server/uploads/.gitkeep
+data/*.json
+.env
+client/dist
+.claude/settings.local.json
