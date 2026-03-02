@@ -5,3 +5,4 @@ data/*.json
 .env
 client/dist
 .claude/settings.local.json
+server/server.zip
