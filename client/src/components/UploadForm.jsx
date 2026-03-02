@@ -13,6 +13,7 @@ export default function UploadForm({ onDeckCreated }) {
   const [deckName, setDeckName] = useState('');
   const [sourceName, setSourceName] = useState('');
   const [cardCount, setCardCount] = useState(15);
+  const [rawCount, setRawCount] = useState('15');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -40,7 +41,8 @@ export default function UploadForm({ onDeckCreated }) {
     setExtractedText('');
     setDeckName('');
     setSourceName('');
-    setCardCount(10);
+    setCardCount(15);
+    setRawCount('15');
     setError(null);
     setProgress(0);
   };
@@ -250,10 +252,18 @@ export default function UploadForm({ onDeckCreated }) {
               Anzahl Karten:
               <input
                 type="number"
+                inputMode="numeric"
+                pattern="[0-9]*"
                 min="3"
                 max="30"
-                value={cardCount}
-                onChange={(e) => setCardCount(Math.max(3, Math.min(30, Number(e.target.value))))}
+                value={rawCount}
+                onChange={(e) => setRawCount(e.target.value)}
+                onBlur={() => {
+                  const n = parseInt(rawCount, 10);
+                  const clamped = isNaN(n) ? 15 : Math.max(3, Math.min(30, n));
+                  setRawCount(String(clamped));
+                  setCardCount(clamped);
+                }}
                 className="count-input"
               />
             </label>
