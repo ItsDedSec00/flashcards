@@ -1,10 +1,59 @@
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const DEFAULT_MODEL = 'arcee-ai/trinity-large-preview:free';
 
-export async function generateCards(text, count = 10, model = DEFAULT_MODEL) {
+// ─── helpers ────────────────────────────────────────────────────────────────
+
+function parseJsonResponse(content) {
+  const cleaned = content.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+  let parsed = JSON.parse(cleaned);
+  if (!Array.isArray(parsed)) {
+    const key = Object.keys(parsed).find(k => Array.isArray(parsed[k]));
+    if (key) parsed = parsed[key];
+    else throw new Error('Model did not return an array');
+  }
+  return parsed;
+}
+
+async function callOpenRouter(messages, { model, temperature = 0.3, max_tokens = 4000 } = {}) {
   const apiKey = process.env.OPENROUTER_API_KEY;
   if (!apiKey) throw new Error('OPENROUTER_API_KEY not set in .env file');
 
+  const response = await fetch(OPENROUTER_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'http://localhost:5173',
+      'X-Title': 'Flashcard App'
+    },
+    body: JSON.stringify({ model, messages, temperature, max_tokens })
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    const error = new Error(err.error?.message || `OpenRouter returned ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  const data = await response.json();
+  return data.choices[0].message.content;
+}
+
+// Run async tasks in batches of `concurrency` at a time
+async function mapConcurrent(items, fn, concurrency = 3) {
+  const results = [];
+  for (let i = 0; i < items.length; i += concurrency) {
+    const batch = items.slice(i, i + concurrency);
+    const batchResults = await Promise.all(batch.map(fn));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
+// ─── Step 1: generate questions + correct answers ────────────────────────────
+
+async function generateCardQuestions(text, count, model) {
   const truncated = text.slice(0, 12000);
 
   const systemPrompt = `Du bist ein Lernkarten-Generator. Erstelle aus dem gegebenen Lernmaterial genau ${count} Frage-Antwort-Paare auf Deutsch.
@@ -16,66 +65,75 @@ Regeln:
 - Variiere die Fragetypen: Definitionen, Vergleiche, Ursache/Wirkung, Anwendungen
 - Erstelle KEINE Fragen über Seitenzahlen, Überschriften oder Formatierungsartefakte
 - Alle Fragen und Antworten MÜSSEN auf Deutsch sein
-- Erstelle zu jeder Frage genau 3 falsche Antworten ("wrongAnswers"), die plausibel klingen aber eindeutig falsch sind
-- Die falschen Antworten sollen thematisch zum Lernmaterial passen und ähnlich lang wie die richtige Antwort sein
 
 Antworte NUR mit einem gültigen JSON-Array, keine Markdown-Blöcke, keine Erklärung:
-[{"question": "...", "answer": "...", "wrongAnswers": ["...", "...", "..."]}, ...]`;
+[{"question": "...", "answer": "..."}, ...]`;
 
-  const response = await fetch(OPENROUTER_URL, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'http://localhost:5173',
-      'X-Title': 'Flashcard App'
-    },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Erstelle ${count} Lernkarten auf Deutsch aus diesem Material:\n\n${truncated}` }
-      ],
-      temperature: 0.3,
-      max_tokens: 4000
-    })
-  });
+  const content = await callOpenRouter(
+    [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Erstelle ${count} Lernkarten auf Deutsch aus diesem Material:\n\n${truncated}` }
+    ],
+    { model, temperature: 0.3, max_tokens: 4000 }
+  );
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    const error = new Error(err.error?.message || `OpenRouter returned ${response.status}`);
-    error.status = response.status;
-    throw error;
-  }
-
-  const data = await response.json();
-  const content = data.choices[0].message.content;
-
-  // Strip markdown fences if the model wrapped the response
-  const cleaned = content.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
-
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error('Failed to parse LLM response as JSON');
-  }
-
-  // Handle wrapped objects like { "flashcards": [...] }
-  if (!Array.isArray(parsed)) {
-    const key = Object.keys(parsed).find(k => Array.isArray(parsed[k]));
-    if (key) parsed = parsed[key];
-    else throw new Error('Model did not return an array of flashcards');
-  }
+  const parsed = parseJsonResponse(content);
 
   return parsed.map((card, i) => {
-    if (!card.question || !card.answer) {
-      throw new Error(`Card ${i} missing question or answer`);
-    }
-    const result = { question: card.question.trim(), answer: card.answer.trim() };
-    if (Array.isArray(card.wrongAnswers) && card.wrongAnswers.length >= 3) {
-      result.wrongAnswers = card.wrongAnswers.slice(0, 3).map(w => w.trim());
-    }
-    return result;
+    if (!card.question || !card.answer) throw new Error(`Card ${i} missing question or answer`);
+    return { question: card.question.trim(), answer: card.answer.trim() };
   });
+}
+
+// ─── Step 2: generate 3 plausible wrong answers for a single card ────────────
+
+async function generateWrongAnswers(question, answer, model) {
+  const prompt = `Du hilfst dabei, Multiple-Choice-Fragen zu erstellen.
+
+Frage: ${question}
+Richtige Antwort: ${answer}
+
+Erstelle genau 3 falsche Antwortoptionen auf Deutsch, die:
+- Plausibel klingen und leicht mit der richtigen Antwort verwechselt werden könnten
+- Ähnlich lang und im gleichen Stil wie die richtige Antwort sind
+- Zum gleichen Fachgebiet gehören und inhaltlich verwandt sind
+- Faktisch falsch sind, aber NICHT offensichtlich oder absurd falsch
+- Sich klar voneinander unterscheiden
+
+Antworte NUR mit einem JSON-Array aus genau 3 Strings, keine Erklärung:
+["falsche Antwort 1", "falsche Antwort 2", "falsche Antwort 3"]`;
+
+  const content = await callOpenRouter(
+    [{ role: 'user', content: prompt }],
+    { model, temperature: 0.7, max_tokens: 400 }
+  );
+
+  const parsed = parseJsonResponse(content);
+  if (!Array.isArray(parsed) || parsed.length < 3) throw new Error('Invalid wrong answers response');
+  return parsed.slice(0, 3).map(w => String(w).trim());
+}
+
+// ─── Main export ─────────────────────────────────────────────────────────────
+
+export async function generateCards(text, count = 15, model = DEFAULT_MODEL) {
+  // Step 1: generate all card questions + correct answers
+  const cards = await generateCardQuestions(text, count, model);
+
+  // Step 2: generate 3 focused wrong answers per card, 3 at a time
+  const cardsWithDistractors = await mapConcurrent(
+    cards,
+    async (card) => {
+      try {
+        const wrongAnswers = await generateWrongAnswers(card.question, card.answer, model);
+        return { ...card, wrongAnswers };
+      } catch {
+        // If distractor generation fails, return card without them
+        // (QuizMode falls back to other cards' answers)
+        return card;
+      }
+    },
+    3
+  );
+
+  return cardsWithDistractors;
 }
