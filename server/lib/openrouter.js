@@ -113,6 +113,9 @@ Antworte NUR mit einem JSON-Array aus genau 3 Strings, keine Erklärung:
   return parsed.slice(0, 3).map(w => String(w).trim());
 }
 
+// ─── Named exports for streaming route ───────────────────────────────────────
+export { generateCardQuestions, generateWrongAnswers, mapConcurrent };
+
 // ─── Main export ─────────────────────────────────────────────────────────────
 
 export async function generateCards(text, count = 15, model = DEFAULT_MODEL) {

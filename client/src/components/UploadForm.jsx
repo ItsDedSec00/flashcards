@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { uploadPDF, uploadPDFs, generateCards, saveDeck, listDriveFiles, downloadDriveFile } from '../api.js';
+import { uploadPDF, uploadPDFs, saveDeck, listDriveFiles, downloadDriveFile } from '../api.js';
 import '../styles/Upload.css';
 
 export default function UploadForm({ onDeckCreated }) {
@@ -17,6 +17,8 @@ export default function UploadForm({ onDeckCreated }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
+  const [progressMsg, setProgressMsg] = useState('');
+  const [fact, setFact] = useState('');
   const fileRef = useRef(null);
 
   // Check if Drive is configured and load files
@@ -97,36 +99,80 @@ export default function UploadForm({ onDeckCreated }) {
     }
   };
 
+  // Rotate useless facts while generating
+  useEffect(() => {
+    if (step !== 'generating') return;
+    const fetchFact = async () => {
+      try {
+        const res = await fetch('https://uselessfacts.jsph.pl/api/v2/facts/random?language=de');
+        const data = await res.json();
+        if (data.text) setFact(data.text);
+      } catch { /* ignore, facts are optional */ }
+    };
+    fetchFact();
+    const interval = setInterval(fetchFact, 9000);
+    return () => clearInterval(interval);
+  }, [step]);
+
   const handleGenerate = async () => {
     setLoading(true);
     setError(null);
     setStep('generating');
-    setProgress(0);
+    setProgress(5);
+    setProgressMsg('Verbindung wird hergestellt...');
+    setFact('');
 
-    console.debug('[Lernkarten] Kartengenierung gestartet:', { cardCount, textLength: extractedText.length });
-
-    const progressInterval = setInterval(() => {
-      setProgress(p => {
-        const next = p + (100 - p) * 0.08;
-        return Math.min(next, 92);
-      });
-    }, 300);
+    console.debug('[Lernkarten] Kartengenerierung gestartet:', { cardCount, textLength: extractedText.length });
 
     try {
-      console.debug('[Lernkarten] Sende Anfrage an OpenRouter...');
-      const result = await generateCards(extractedText, cardCount);
-      clearInterval(progressInterval);
-      setProgress(100);
-      console.debug('[Lernkarten] Karten erfolgreich generiert:', result.cards.length, 'Karten');
-      console.debug('[Lernkarten] Karten:', result.cards);
+      const response = await fetch('/api/generate/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText, count: cardCount })
+      });
 
+      if (!response.ok) {
+        throw new Error(`Server-Fehler: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let cards = null;
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          let event;
+          try { event = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (event.error) throw new Error(event.error);
+          if (event.progress != null) setProgress(event.progress);
+          if (event.message) {
+            setProgressMsg(event.message);
+            console.debug('[Lernkarten]', event.message);
+          }
+          if (event.phase === 'done') {
+            cards = event.cards;
+            console.debug('[Lernkarten] Karten erfolgreich generiert:', cards.length, 'Karten');
+          }
+        }
+      }
+
+      if (!cards) throw new Error('Keine Karten empfangen');
+
+      setProgressMsg('Deck wird gespeichert...');
       console.debug('[Lernkarten] Deck wird automatisch gespeichert...');
-      await saveDeck(deckName, result.cards, sourceName);
+      await saveDeck(deckName, cards, sourceName);
       console.debug('[Lernkarten] Deck gespeichert!');
       reset();
       onDeckCreated();
     } catch (e) {
-      clearInterval(progressInterval);
       console.error('[Lernkarten] Generierung fehlgeschlagen:', e.message);
       setError(e.message);
       setStep('preview');
@@ -280,11 +326,23 @@ export default function UploadForm({ onDeckCreated }) {
       {step === 'generating' && (
         <div className="generating-area">
           <div className="spinner" />
-          <p>{cardCount} Lernkarten werden generiert...</p>
+          <p className="generating-title">
+            {progress < 40
+              ? `Schritt 1 / 2 — Fragen generieren`
+              : progress < 100
+              ? `Schritt 2 / 2 — Falsche Antworten erstellen`
+              : 'Fertig!'}
+          </p>
           <div className="gen-progress">
             <div className="gen-progress-bar" style={{ width: `${progress}%` }} />
           </div>
-          <p className="generating-sub">{progress < 30 ? 'Anfrage wird gesendet...' : progress < 70 ? 'KI generiert Karten...' : progress < 95 ? 'Fast fertig...' : 'Deck wird gespeichert...'}</p>
+          <p className="generating-sub">{progressMsg}</p>
+          {fact && (
+            <div className="useless-fact">
+              <span className="fact-label">Wusstest du?</span>
+              <span className="fact-text">{fact}</span>
+            </div>
+          )}
         </div>
       )}
     </section>
