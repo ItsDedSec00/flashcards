@@ -53,7 +53,8 @@ router.post('/', async (req, res) => {
       cards: cards.map((c, i) => ({
         id: `${id}-${i}`,
         question: c.question,
-        answer: c.answer
+        answer: c.answer,
+        wrongAnswers: c.wrongAnswers || []
       })),
       createdAt: new Date().toISOString()
     };
